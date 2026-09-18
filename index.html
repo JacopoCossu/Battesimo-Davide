@@ -458,7 +458,7 @@ footer { color:#acb4b3; padding-top:22px; }
           <h2>Conduci Davide al fonte</h2>
           <p>Un piccolo gioco per ricordare il Battesimo di Davide.<br>
              Grazie di essere con noi in questo giorno di festa!</p>
-          <p class="baptism-instructions">Raccogli le 5 colombe e accompagna Davide al fonte</p>
+          <p class="baptism-instructions">Raccogli le 5 colombe e accompagna Davide al fonte.<br>Con l'olio i diavoletti diventano blu: toccali per mangiarli!</p>
           <button class="primary-button" id="startButton">Inizia il cammino <span>→</span></button>
           <p class="control-hint">
             Frecce / WASD &nbsp;·&nbsp; oppure scorri il dito sullo schermo
@@ -504,7 +504,7 @@ const soundButton = document.getElementById("soundButton");
 const TILE = 44, COLS = 29, ROWS = 15;
 const OX = Math.floor((canvas.width - COLS * TILE) / 2);
 const OY = 22;
-const TOTAL_DOVES = 5, SCARED_DURATION = 7, OIL_RESPAWN = 20;
+const TOTAL_DOVES = 5, SCARED_DURATION = 7, OIL_RESPAWN = 20, DEVIL_RESPAWN = 3;
 let GATE_COL, GATE_ROW;
 const S = 3; // pixel scale
 
@@ -546,17 +546,23 @@ function buildMap(seed,index){
     [shortcuts[i],shortcuts[j]]=[shortcuts[j],shortcuts[i]];
   }
   shortcuts.slice(0,18).forEach(({col,row})=>{grid[row][col]=".";});
-  // Ogni configurazione ha una diversa posizione della porta orizzontale.
-  const gateCol=4+(index%11)*2,gateRow=3+Math.floor(index/11)*2;
+  // Il Mar Rosso rimane nella metà destra della mappa e del corridoio.
+  const gateCol=19+(index%3)*2,gateRow=3+(Math.floor(index/10)%5)*2;
+  const corridorStart=gateCol-6,corridorEnd=gateCol+2;
   // Un percorso alternativo mantiene tutti gli oggetti raggiungibili a porta
   // chiusa e permette di tornare al fonte anche dopo una vita persa.
-  for(let col=gateCol-1;col<=gateCol+1;col++) grid[gateRow-2][col]=".";
-  for(let row=gateRow-2;row<=gateRow;row++){
-    grid[row][gateCol-1]=".";grid[row][gateCol+1]=".";
+  for(let col=corridorStart;col<=corridorEnd;col++){
+    grid[gateRow-2][col]=".";grid[gateRow+2][col]=".";
+    grid[gateRow][col]=".";
   }
-  // Il Mar Rosso occupa un corridoio orizzontale largo una sola casella.
-  grid[gateRow-1][gateCol]="#";
-  grid[gateRow+1][gateCol]="#";
+  for(let row=gateRow-2;row<=gateRow+2;row++){
+    grid[row][corridorStart]=".";grid[row][corridorEnd]=".";
+  }
+  // Il Mar Rosso sta sul sentiero, fra le pareti di mattoni del corridoio.
+  for(let col=corridorStart+1;col<corridorEnd;col++){
+    grid[gateRow-1][col]="#";
+    grid[gateRow+1][col]="#";
+  }
   grid[gateRow][gateCol]="G";
   grid[7][27]="F";
   // Due vie di fuga dalla partenza (1,1), disponibili anche a porta chiusa.
@@ -685,11 +691,31 @@ function chooseDevilDir(devil){
   if(opts.length) devil.wanted=opts[Math.floor(Math.random()*opts.length)];
 }
 
+function respawnDevil(devil){
+  // Il bordo scelto è sempre quello più lontano dalla metà in cui si trova Davide.
+  const oppositeRight=player.col<COLS/2;
+  const cells=[];
+  for(let row=1;row<ROWS-1;row++) for(let col=1;col<COLS-1;col++){
+    if(MAP[row][col]!=="." || (oppositeRight?col<COLS-4:col>3)) continue;
+    if(devils.some(other=>other!==devil&&other.respawnTimer<=0&&other.col===col&&other.row===row)) continue;
+    cells.push({col,row});
+  }
+  // Fra le caselle del bordo, usa quella più distante dal bambino.
+  cells.sort((a,b)=>
+    (Math.abs(b.col-player.col)+Math.abs(b.row-player.row))-
+    (Math.abs(a.col-player.col)+Math.abs(a.row-player.row)));
+  const cell=cells[0];
+  if(!cell) return;
+  Object.assign(devil,makeActor(cell.col,cell.row,devil.speed,{
+    color:devil.color,phase:devil.phase,respawnTimer:0
+  }));
+}
+
 function resetGame(){
   GATE_ROW=MAP.findIndex(row=>row.includes("G"));
   GATE_COL=MAP[GATE_ROW].indexOf("G");
   Object.assign(player,makeActor(1,1,150),{lives:3,score:0,invincible:0});
-  devils=devilCells.map((c,i)=>makeActor(c.col,c.row,90+i*8,{color:c.color,phase:c.phase}));
+  devils=devilCells.map((c,i)=>makeActor(c.col,c.row,90+i*8,{color:c.color,phase:c.phase,respawnTimer:0}));
   devils.forEach(d=>{d.dir={x:1,y:0};d.wanted={x:1,y:0};});
   doves=randomCollectibleCells(TOTAL_DOVES).map(c=>({...c,collected:false}));
   crumbs=[];
@@ -737,7 +763,12 @@ function update(dt){
   }
   player.invincible=Math.max(0,player.invincible-dt);
   moveActor(player,dt);
-  devils.forEach(d=>moveActor(d,dt,chooseDevilDir));
+  devils.forEach(devil=>{
+    if(devil.respawnTimer>0){
+      devil.respawnTimer=Math.max(0,devil.respawnTimer-dt);
+      if(devil.respawnTimer===0) respawnDevil(devil);
+    } else moveActor(devil,dt,chooseDevilDir);
+  });
   crumbs.forEach(c=>{if(!c.eaten&&c.col===player.col&&c.row===player.row) c.eaten=true;});
   doves.forEach(dove=>{
     if(!dove.collected&&dove.col===player.col&&dove.row===player.row){
@@ -745,16 +776,19 @@ function update(dt){
       burst(dove.col,dove.row,N.cyan,24); tone(880,0.1,"square");
     }
   });
-  if(scaredTimer<=0){
-    devils.forEach(devil=>{
-      if(player.invincible<=0&&Math.hypot(player.x-devil.x,player.y-devil.y)<30){
-        player.lives-=1; player.invincible=1.8;
-        Object.assign(player,makeActor(1,1,150),{lives:player.lives,score:player.score,invincible:1.8});
-        burst(1,1,N.red,26); tone(150,0.18,"sawtooth");
-        if(player.lives<=0) finishGame(false);
-      }
-    });
-  }
+  devils.forEach(devil=>{
+    if(devil.respawnTimer>0||Math.hypot(player.x-devil.x,player.y-devil.y)>=30) return;
+    if(scaredTimer>0){
+      devil.respawnTimer=DEVIL_RESPAWN;
+      burst(devil.col,devil.row,N.blue,24);
+      tone(660,0.12,"square");
+    } else if(player.invincible<=0){
+      player.lives-=1; player.invincible=1.8;
+      Object.assign(player,makeActor(1,1,150),{lives:player.lives,score:player.score,invincible:1.8});
+      burst(1,1,N.red,26); tone(150,0.18,"sawtooth");
+      if(player.lives<=0) finishGame(false);
+    }
+  });
   if(MAP[player.row][player.col]==="F"&&player.score===TOTAL_DOVES) finishGame(true);
   particles.forEach(p=>{p.x+=p.vx*dt;p.y+=p.vy*dt;p.life-=dt;});
   particles=particles.filter(p=>p.life>0);
@@ -940,6 +974,7 @@ function drawPortrait(){
 
 // ── Demonietti ───────────────────────────────────────────────────────────────
 function drawDevil(devil){
+  if(devil.respawnTimer>0) return;
   const scared=scaredTimer>0;
   if(scared&&scaredTimer<2&&Math.floor(elapsed*6)%2===1) return;
   const bob=Math.round(Math.sin(elapsed*5+devil.phase)*2);
@@ -984,8 +1019,8 @@ function drawGate(){
   px(x+2,y+2,40,40,"#214f69");
   for(let line=0;line<5;line++){
     const wave=Math.floor(elapsed*3+line)%3;
-    px(x+4+wave,y+5+line*7,34-wave,2,"#609cab");
-    px(x+7,y+7+line*7,24,1,"#36768e");
+    px(x+5+line*7,y+4+wave,2,34-wave,"#609cab");
+    px(x+7+line*7,y+7,1,24,"#36768e");
   }
   if(opening>0){
     px(x+2,y+22-opening,40,opening*2,"#c5ac77");
